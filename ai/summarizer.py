@@ -21,20 +21,18 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-_GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 _MODEL_NAME: str = "gemini-1.5-flash"
 
 
 def _get_model():
     """
     Lazily initialise and return a Gemini GenerativeModel instance.
-
-    Returns
-    -------
-    google.generativeai.GenerativeModel | None
-        Configured model, or None if the key is absent / import fails.
+    Reads GEMINI_API_KEY dynamically each call so Render env vars are
+    always picked up without requiring a restart.
     """
-    if not _GEMINI_API_KEY or _GEMINI_API_KEY == "your_gemini_api_key_here":
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+
+    if not api_key or api_key == "your_gemini_api_key_here":
         logger.warning(
             "GEMINI_API_KEY is not configured. "
             "AI summaries will return placeholder data."
@@ -43,9 +41,17 @@ def _get_model():
 
     try:
         import google.generativeai as genai  # type: ignore
-
-        genai.configure(api_key=_GEMINI_API_KEY)
+        genai.configure(api_key=api_key)
         return genai.GenerativeModel(_MODEL_NAME)
+    except ImportError:
+        try:
+            # Fallback: newer google-genai package
+            from google import genai as new_genai  # type: ignore
+            client = new_genai.Client(api_key=api_key)
+            return client
+        except Exception as exc2:
+            logger.error("Failed to import any Gemini library: %s", exc2)
+            return None
     except Exception as exc:
         logger.error("Failed to initialise Gemini model: %s", exc)
         return None
