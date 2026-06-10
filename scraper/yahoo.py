@@ -1,0 +1,300 @@
+"""
+scraper/yahoo.py
+----------------
+Wrappers around the yfinance library for stock data and news retrieval,
+plus a local-list-based ticker search utility.
+"""
+
+import logging
+from datetime import datetime
+from typing import Any
+
+import yfinance as yf
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Popular NASDAQ / US-listed stock universe used for the search function.
+# Extend this list freely; it is filtered client-side so no API key is needed.
+# ---------------------------------------------------------------------------
+POPULAR_STOCKS: list[dict[str, str]] = [
+    {"ticker": "AAPL",  "name": "Apple Inc."},
+    {"ticker": "MSFT",  "name": "Microsoft Corporation"},
+    {"ticker": "NVDA",  "name": "NVIDIA Corporation"},
+    {"ticker": "GOOGL", "name": "Alphabet Inc. Class A"},
+    {"ticker": "GOOG",  "name": "Alphabet Inc. Class C"},
+    {"ticker": "AMZN",  "name": "Amazon.com Inc."},
+    {"ticker": "META",  "name": "Meta Platforms Inc."},
+    {"ticker": "TSLA",  "name": "Tesla Inc."},
+    {"ticker": "AMD",   "name": "Advanced Micro Devices Inc."},
+    {"ticker": "INTC",  "name": "Intel Corporation"},
+    {"ticker": "QCOM",  "name": "Qualcomm Inc."},
+    {"ticker": "AVGO",  "name": "Broadcom Inc."},
+    {"ticker": "ADBE",  "name": "Adobe Inc."},
+    {"ticker": "CRM",   "name": "Salesforce Inc."},
+    {"ticker": "NFLX",  "name": "Netflix Inc."},
+    {"ticker": "PYPL",  "name": "PayPal Holdings Inc."},
+    {"ticker": "MU",    "name": "Micron Technology Inc."},
+    {"ticker": "LRCX",  "name": "Lam Research Corporation"},
+    {"ticker": "AMAT",  "name": "Applied Materials Inc."},
+    {"ticker": "KLAC",  "name": "KLA Corporation"},
+    {"ticker": "MRVL",  "name": "Marvell Technology Inc."},
+    {"ticker": "PANW",  "name": "Palo Alto Networks Inc."},
+    {"ticker": "CRWD",  "name": "CrowdStrike Holdings Inc."},
+    {"ticker": "ZS",    "name": "Zscaler Inc."},
+    {"ticker": "DDOG",  "name": "Datadog Inc."},
+    {"ticker": "SNOW",  "name": "Snowflake Inc."},
+    {"ticker": "PLTR",  "name": "Palantir Technologies Inc."},
+    {"ticker": "ABNB",  "name": "Airbnb Inc."},
+    {"ticker": "UBER",  "name": "Uber Technologies Inc."},
+    {"ticker": "LYFT",  "name": "Lyft Inc."},
+    {"ticker": "COIN",  "name": "Coinbase Global Inc."},
+    {"ticker": "HOOD",  "name": "Robinhood Markets Inc."},
+    {"ticker": "SOFI",  "name": "SoFi Technologies Inc."},
+    {"ticker": "RBLX",  "name": "Roblox Corporation"},
+    {"ticker": "U",     "name": "Unity Software Inc."},
+    {"ticker": "TTWO",  "name": "Take-Two Interactive Software Inc."},
+    {"ticker": "EA",    "name": "Electronic Arts Inc."},
+    {"ticker": "ATVI",  "name": "Activision Blizzard Inc."},
+    {"ticker": "DOCU",  "name": "DocuSign Inc."},
+    {"ticker": "ZM",    "name": "Zoom Video Communications Inc."},
+    {"ticker": "OKTA",  "name": "Okta Inc."},
+    {"ticker": "NET",   "name": "Cloudflare Inc."},
+    {"ticker": "FSLY",  "name": "Fastly Inc."},
+    {"ticker": "TWLO",  "name": "Twilio Inc."},
+    {"ticker": "SHOP",  "name": "Shopify Inc."},
+    {"ticker": "SQ",    "name": "Block Inc."},
+    {"ticker": "ROKU",  "name": "Roku Inc."},
+    {"ticker": "SPOT",  "name": "Spotify Technology SA"},
+    {"ticker": "PINS",  "name": "Pinterest Inc."},
+    {"ticker": "SNAP",  "name": "Snap Inc."},
+    {"ticker": "DBX",   "name": "Dropbox Inc."},
+    {"ticker": "BOX",   "name": "Box Inc."},
+    {"ticker": "WDAY",  "name": "Workday Inc."},
+    {"ticker": "NOW",   "name": "ServiceNow Inc."},
+    {"ticker": "TEAM",  "name": "Atlassian Corporation"},
+    {"ticker": "ZEN",   "name": "Zendesk Inc."},
+    {"ticker": "HUBS",  "name": "HubSpot Inc."},
+    {"ticker": "BILL",  "name": "Bill.com Holdings Inc."},
+    {"ticker": "MNDY",  "name": "monday.com Ltd."},
+    {"ticker": "GTLB",  "name": "GitLab Inc."},
+    {"ticker": "PATH",  "name": "UiPath Inc."},
+    {"ticker": "SMAR",  "name": "Smartsheet Inc."},
+    {"ticker": "MDB",   "name": "MongoDB Inc."},
+    {"ticker": "ESTC",  "name": "Elastic NV"},
+    {"ticker": "DOMO",  "name": "Domo Inc."},
+    {"ticker": "SUMO",  "name": "Sumo Logic Inc."},
+    {"ticker": "SPLK",  "name": "Splunk Inc."},
+    {"ticker": "VEEV",  "name": "Veeva Systems Inc."},
+    {"ticker": "APPN",  "name": "Appian Corporation"},
+    {"ticker": "ALTR",  "name": "Altair Engineering Inc."},
+    {"ticker": "NCNO",  "name": "nCino Inc."},
+    {"ticker": "DSGX",  "name": "The Descartes Systems Group Inc."},
+    {"ticker": "AFRM",  "name": "Affirm Holdings Inc."},
+    {"ticker": "UPST",  "name": "Upstart Holdings Inc."},
+    {"ticker": "BNPL",  "name": "Sezzle Inc."},
+    {"ticker": "OPEN",  "name": "Opendoor Technologies Inc."},
+    {"ticker": "CVNA",  "name": "Carvana Co."},
+    {"ticker": "VROOM", "name": "Vroom Inc."},
+    {"ticker": "ANGI",  "name": "Angi Inc."},
+    {"ticker": "IAC",   "name": "IAC Inc."},
+    {"ticker": "MTCH",  "name": "Match Group Inc."},
+    {"ticker": "BMBL",  "name": "Bumble Inc."},
+    {"ticker": "DASH",  "name": "DoorDash Inc."},
+    {"ticker": "CART",  "name": "Instacart (Maplebear Inc.)"},
+    {"ticker": "ARM",   "name": "Arm Holdings plc"},
+    {"ticker": "SMCI",  "name": "Super Micro Computer Inc."},
+    {"ticker": "DELL",  "name": "Dell Technologies Inc."},
+    {"ticker": "HPQ",   "name": "HP Inc."},
+    {"ticker": "HPE",   "name": "Hewlett Packard Enterprise Co."},
+    {"ticker": "CSCO",  "name": "Cisco Systems Inc."},
+    {"ticker": "ORCL",  "name": "Oracle Corporation"},
+    {"ticker": "IBM",   "name": "International Business Machines Corp."},
+    {"ticker": "ACN",   "name": "Accenture plc"},
+    {"ticker": "INTU",  "name": "Intuit Inc."},
+    {"ticker": "ANSS",  "name": "ANSYS Inc."},
+    {"ticker": "CDNS",  "name": "Cadence Design Systems Inc."},
+    {"ticker": "SNPS",  "name": "Synopsys Inc."},
+    {"ticker": "MCHP",  "name": "Microchip Technology Inc."},
+    {"ticker": "ON",    "name": "ON Semiconductor Corporation"},
+    {"ticker": "SWKS",  "name": "Skyworks Solutions Inc."},
+    {"ticker": "QRVO",  "name": "Qorvo Inc."},
+    {"ticker": "TXN",   "name": "Texas Instruments Inc."},
+    {"ticker": "ADI",   "name": "Analog Devices Inc."},
+    {"ticker": "MXIM",  "name": "Maxim Integrated Products Inc."},
+    {"ticker": "XLNX",  "name": "Xilinx Inc."},
+    {"ticker": "IDXX",  "name": "IDEXX Laboratories Inc."},
+    {"ticker": "ILMN",  "name": "Illumina Inc."},
+    {"ticker": "VRTX",  "name": "Vertex Pharmaceuticals Inc."},
+    {"ticker": "REGN",  "name": "Regeneron Pharmaceuticals Inc."},
+    {"ticker": "BIIB",  "name": "Biogen Inc."},
+    {"ticker": "GILD",  "name": "Gilead Sciences Inc."},
+    {"ticker": "AMGN",  "name": "Amgen Inc."},
+    {"ticker": "ISRG",  "name": "Intuitive Surgical Inc."},
+    {"ticker": "ALGN",  "name": "Align Technology Inc."},
+    {"ticker": "DXCM",  "name": "DexCom Inc."},
+    {"ticker": "PODD",  "name": "Insulet Corporation"},
+    {"ticker": "NTRA",  "name": "Natera Inc."},
+    {"ticker": "GH",    "name": "Guardant Health Inc."},
+    {"ticker": "NVAX",  "name": "Novavax Inc."},
+    {"ticker": "MRNA",  "name": "Moderna Inc."},
+    {"ticker": "BNTX",  "name": "BioNTech SE"},
+    {"ticker": "CRSP",  "name": "CRISPR Therapeutics AG"},
+    {"ticker": "EDIT",  "name": "Editas Medicine Inc."},
+    {"ticker": "NTLA",  "name": "Intellia Therapeutics Inc."},
+]
+
+
+def get_stock_info(ticker: str) -> dict[str, Any]:
+    """
+    Fetch current price, key financials and metadata for a ticker.
+
+    Parameters
+    ----------
+    ticker : str
+        The stock ticker symbol (e.g. 'AAPL').
+
+    Returns
+    -------
+    dict
+        Keys: ticker, name, price, change, change_pct, market_cap,
+              sector, pe_ratio, week_52_high, week_52_low, volume.
+        Returns an error dict if the request fails.
+    """
+    try:
+        stock = yf.Ticker(ticker.upper())
+        info = stock.info
+
+        # fast_info is lighter and more reliable for live price data
+        fast = stock.fast_info
+
+        price: float = getattr(fast, "last_price", None) or info.get("regularMarketPrice", 0.0)
+        prev_close: float = getattr(fast, "previous_close", None) or info.get("regularMarketPreviousClose", price)
+
+        change: float = round(price - prev_close, 4) if price and prev_close else 0.0
+        change_pct: float = round((change / prev_close) * 100, 2) if prev_close else 0.0
+
+        return {
+            "ticker":       ticker.upper(),
+            "name":         info.get("longName") or info.get("shortName", ticker.upper()),
+            "price":        round(price, 4) if price else None,
+            "change":       change,
+            "change_pct":   change_pct,
+            "market_cap":   info.get("marketCap"),
+            "sector":       info.get("sector", "Technology"),
+            "pe_ratio":     info.get("trailingPE"),
+            "week_52_high": info.get("fiftyTwoWeekHigh"),
+            "week_52_low":  info.get("fiftyTwoWeekLow"),
+            "volume":       info.get("volume") or getattr(fast, "three_month_average_volume", None),
+        }
+
+    except Exception as exc:
+        logger.error("get_stock_info(%s) failed: %s", ticker, exc)
+        return {
+            "ticker":     ticker.upper(),
+            "error":      str(exc),
+            "price":      None,
+            "change":     None,
+            "change_pct": None,
+        }
+
+
+def get_stock_news(ticker: str) -> list[dict[str, Any]]:
+    """
+    Retrieve recent news articles for a ticker from yfinance.
+
+    Parameters
+    ----------
+    ticker : str
+        The stock ticker symbol.
+
+    Returns
+    -------
+    list[dict]
+        Each item has keys: title, description, url, source, published_at.
+        Returns an empty list on failure.
+    """
+    try:
+        stock = yf.Ticker(ticker.upper())
+        raw_news = stock.news or []
+        result: list[dict[str, Any]] = []
+
+        for item in raw_news:
+            # yfinance news structure changed over versions; handle both
+            content = item.get("content", item)
+
+            # Extract publication timestamp
+            pub_ts = (
+                content.get("pubDate")
+                or content.get("provider_publish_time")
+                or item.get("providerPublishTime")
+            )
+            if isinstance(pub_ts, int):
+                pub_ts = datetime.utcfromtimestamp(pub_ts).isoformat()
+
+            # Extract source name
+            provider = content.get("provider", {})
+            source_name = (
+                provider.get("displayName")
+                if isinstance(provider, dict)
+                else content.get("source", "Yahoo Finance")
+            )
+
+            # Extract thumbnail / image URL
+            thumbnail = content.get("thumbnail") or {}
+            resolutions = thumbnail.get("resolutions", []) if isinstance(thumbnail, dict) else []
+            image_url = resolutions[0].get("url") if resolutions else None
+
+            result.append(
+                {
+                    "title":        content.get("title") or item.get("title", ""),
+                    "description":  content.get("summary") or content.get("description", ""),
+                    "url":          content.get("canonicalUrl", {}).get("url")
+                                    if isinstance(content.get("canonicalUrl"), dict)
+                                    else content.get("link") or item.get("link", ""),
+                    "source":       source_name or "Yahoo Finance",
+                    "published_at": pub_ts or "",
+                    "image_url":    image_url,
+                }
+            )
+
+        return result
+
+    except Exception as exc:
+        logger.error("get_stock_news(%s) failed: %s", ticker, exc)
+        return []
+
+
+def search_stocks(query: str) -> list[dict[str, str]]:
+    """
+    Search the local popular-stocks list for tickers or company names
+    that contain *query* (case-insensitive).
+
+    Parameters
+    ----------
+    query : str
+        The search string (partial ticker or company name).
+
+    Returns
+    -------
+    list[dict]
+        Each item has keys: ticker, name.
+        Returns up to 20 results.
+    """
+    if not query or len(query.strip()) == 0:
+        return POPULAR_STOCKS[:20]
+
+    q = query.strip().upper()
+    matches: list[dict[str, str]] = []
+
+    for stock in POPULAR_STOCKS:
+        if q in stock["ticker"].upper() or q in stock["name"].upper():
+            matches.append(stock)
+        if len(matches) >= 20:
+            break
+
+    # If we have at least one ticker match, prioritise exact ticker prefix
+    if matches:
+        matches.sort(key=lambda s: (0 if s["ticker"].startswith(q) else 1, s["ticker"]))
+
+    return matches
