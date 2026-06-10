@@ -148,54 +148,69 @@ POPULAR_STOCKS: list[dict[str, str]] = [
 def get_stock_info(ticker: str) -> dict[str, Any]:
     """
     Fetch current price, key financials and metadata for a ticker.
-
-    Parameters
-    ----------
-    ticker : str
-        The stock ticker symbol (e.g. 'AAPL').
-
-    Returns
-    -------
-    dict
-        Keys: ticker, name, price, change, change_pct, market_cap,
-              sector, pe_ratio, week_52_high, week_52_low, volume.
-        Returns an error dict if the request fails.
+    Uses fast_info first for speed, falls back to info only for metadata.
     """
+    upper = ticker.upper()
     try:
-        stock = yf.Ticker(ticker.upper())
-        info = stock.info
+        stock = yf.Ticker(upper)
 
-        # fast_info is lighter and more reliable for live price data
+        # fast_info is much faster and more reliable for live price data
         fast = stock.fast_info
 
-        price: float = getattr(fast, "last_price", None) or info.get("regularMarketPrice", 0.0)
-        prev_close: float = getattr(fast, "previous_close", None) or info.get("regularMarketPreviousClose", price)
+        price: float | None = getattr(fast, 'last_price', None)
+        prev_close: float | None = getattr(fast, 'previous_close', None)
+        week_52_high: float | None = getattr(fast, 'year_high', None)
+        week_52_low: float | None = getattr(fast, 'year_low', None)
+        market_cap: float | None = getattr(fast, 'market_cap', None)
+        volume: float | None = getattr(fast, 'three_month_average_volume', None)
 
-        change: float = round(price - prev_close, 4) if price and prev_close else 0.0
-        change_pct: float = round((change / prev_close) * 100, 2) if prev_close else 0.0
+        change: float = round(float(price or 0) - float(prev_close or 0), 4) if price and prev_close else 0.0
+        change_pct: float = round((change / float(prev_close)) * 100, 2) if prev_close else 0.0
+
+        # Only call .info if we need metadata (name, sector) — it's slow so wrap in try
+        name = upper
+        sector = "Technology"
+        pe_ratio = None
+        try:
+            info = stock.info
+            name = info.get('longName') or info.get('shortName') or upper
+            sector = info.get('sector', 'Technology')
+            pe_ratio = info.get('trailingPE')
+            # Fill in missing fast_info values from info if needed
+            if not market_cap:
+                market_cap = info.get('marketCap')
+            if not week_52_high:
+                week_52_high = info.get('fiftyTwoWeekHigh')
+            if not week_52_low:
+                week_52_low = info.get('fiftyTwoWeekLow')
+        except Exception as info_exc:
+            logger.warning("get_stock_info(%s) .info failed (non-fatal): %s", upper, info_exc)
+
+        if price is None:
+            raise ValueError(f"No price data returned by yfinance for {upper}")
 
         return {
-            "ticker":       ticker.upper(),
-            "name":         info.get("longName") or info.get("shortName", ticker.upper()),
-            "price":        round(price, 4) if price else None,
-            "change":       change,
-            "change_pct":   change_pct,
-            "market_cap":   info.get("marketCap"),
-            "sector":       info.get("sector", "Technology"),
-            "pe_ratio":     info.get("trailingPE"),
-            "week_52_high": info.get("fiftyTwoWeekHigh"),
-            "week_52_low":  info.get("fiftyTwoWeekLow"),
-            "volume":       info.get("volume") or getattr(fast, "three_month_average_volume", None),
+            'ticker':       upper,
+            'name':         name,
+            'price':        round(float(price), 4),
+            'change':       change,
+            'change_pct':   change_pct,
+            'market_cap':   market_cap,
+            'sector':       sector,
+            'pe_ratio':     pe_ratio,
+            'week_52_high': week_52_high,
+            'week_52_low':  week_52_low,
+            'volume':       volume,
         }
 
     except Exception as exc:
-        logger.error("get_stock_info(%s) failed: %s", ticker, exc)
+        logger.error("get_stock_info(%s) failed: %s", upper, exc)
         return {
-            "ticker":     ticker.upper(),
-            "error":      str(exc),
-            "price":      None,
-            "change":     None,
-            "change_pct": None,
+            'ticker':     upper,
+            'error':      str(exc),
+            'price':      None,
+            'change':     None,
+            'change_pct': None,
         }
 
 
