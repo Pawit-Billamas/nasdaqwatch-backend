@@ -18,7 +18,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from ai.summarizer import summarize_news
+from ai.summarizer import summarize_news, score_news_sentiment
 from db.database import get_db
 from scraper import newsapi as newsapi_scraper
 from scraper import yahoo as yahoo_scraper
@@ -157,20 +157,40 @@ def _cache_summary(ticker: str, summary: dict[str, Any]) -> None:
 @router.get("/market", summary="General NASDAQ / tech market news")
 async def market_news() -> dict[str, Any]:
     """
-    Return recent general NASDAQ and technology-sector news.
-
-    Combines NewsAPI results (if key is configured) with a small set
-    of yfinance headlines from QQQ (NASDAQ ETF proxy).
+    Return recent NASDAQ/tech market news with per-article sentiment.
+    Each article has a 'sentiment' field: bullish | neutral | bearish.
+    Also returns overall market_sentiment summary.
     """
     try:
         newsapi_articles = newsapi_scraper.get_market_news(days=7)
         yf_articles = yahoo_scraper.get_stock_news("QQQ")  # NASDAQ 100 ETF proxy
 
         combined = _deduplicate(newsapi_articles + yf_articles)
+
+        # Score sentiment for every article (fast local, no API call)
+        scored: list[dict[str, Any]] = []
+        for a in combined:
+            sentiment = score_news_sentiment(
+                a.get("title", ""),
+                a.get("description", ""),
+            )
+            scored.append({**a, "sentiment": sentiment})
+
+        # Derive overall market sentiment from article counts
+        bull = sum(1 for a in scored if a["sentiment"] == "bullish")
+        bear = sum(1 for a in scored if a["sentiment"] == "bearish")
+        if bull > bear + 2:
+            market_sentiment = "bullish"
+        elif bear > bull + 2:
+            market_sentiment = "bearish"
+        else:
+            market_sentiment = "neutral"
+
         return {
-            "source":  "NewsAPI + yfinance",
-            "count":   len(combined),
-            "articles": combined,
+            "source":           "NewsAPI + yfinance",
+            "count":            len(scored),
+            "market_sentiment": market_sentiment,
+            "articles":         scored,
         }
     except Exception as exc:
         logger.error("market_news() failed: %s", exc)
@@ -180,13 +200,7 @@ async def market_news() -> dict[str, Any]:
 @router.get("/{ticker}", summary="Get news for a specific ticker")
 async def stock_news(ticker: str) -> dict[str, Any]:
     """
-    Return recent news for the given ticker.
-
-    Data is sourced from:
-      1. yfinance (always available, no key needed)
-      2. NewsAPI (requires NEWSAPI_KEY in .env)
-
-    Results are deduplicated by title and cached in SQLite for 1 hour.
+    Return recent news for the given ticker with per-article sentiment.
     """
     try:
         upper_ticker = ticker.upper()
@@ -194,34 +208,37 @@ async def stock_news(ticker: str) -> dict[str, Any]:
         # Try fresh cache first
         cached = _get_cached_articles(upper_ticker)
         if cached:
-            return {
-                "ticker":  upper_ticker,
-                "source":  "cache",
-                "count":   len(cached),
-                "articles": cached,
-            }
+            # Add sentiment if missing from cache
+            scored = [
+                {**a, "sentiment": a.get("sentiment") or score_news_sentiment(a.get("title", ""), a.get("description", ""))}
+                for a in cached
+            ]
+            return {"ticker": upper_ticker, "source": "cache", "count": len(scored), "articles": scored}
 
         # Fetch live data
         yf_articles = yahoo_scraper.get_stock_news(upper_ticker)
-
-        # Get company name for better NewsAPI query
         stock_info = yahoo_scraper.get_stock_info(upper_ticker)
         company_name = stock_info.get("name", "")
 
         newsapi_articles = newsapi_scraper.get_stock_news(
-            ticker=upper_ticker,
-            company_name=company_name,
-            days=7,
+            ticker=upper_ticker, company_name=company_name, days=7,
         )
 
         combined = _deduplicate(yf_articles + newsapi_articles)
-        _cache_articles(upper_ticker, combined)
+
+        # Score sentiment for each article
+        scored = [
+            {**a, "sentiment": score_news_sentiment(a.get("title", ""), a.get("description", ""))}
+            for a in combined
+        ]
+
+        _cache_articles(upper_ticker, scored)
 
         return {
-            "ticker":  upper_ticker,
-            "source":  "yfinance + NewsAPI",
-            "count":   len(combined),
-            "articles": combined,
+            "ticker":   upper_ticker,
+            "source":   "yfinance + NewsAPI",
+            "count":    len(scored),
+            "articles": scored,
         }
     except Exception as exc:
         logger.error("stock_news(%s) failed: %s", ticker, exc)
