@@ -36,15 +36,32 @@ _SUMMARY_TTL_HOURS = 6
 # Helper utilities
 # ---------------------------------------------------------------------------
 
+import re
+
 def _deduplicate(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Remove duplicate articles using title as the unique key."""
-    seen: set[str] = set()
+    """Remove duplicate articles using normalized title and URL as keys."""
+    seen_urls: set[str] = set()
+    seen_titles: set[str] = set()
     unique: list[dict[str, Any]] = []
+    
     for a in articles:
-        key = (a.get("title") or "").strip().lower()
-        if key and key not in seen:
-            seen.add(key)
-            unique.append(a)
+        url = (a.get("url") or "").strip().lower()
+        title = (a.get("title") or "").strip().lower()
+        
+        # Remove all punctuation and extra whitespace for fuzzy match
+        norm_title = re.sub(r'[^\w\s]', '', title)
+        norm_title = re.sub(r'\s+', ' ', norm_title).strip()
+        
+        # Skip if either URL or exact normalized title has been seen
+        if (url and url in seen_urls) or (norm_title and norm_title in seen_titles):
+            continue
+            
+        if url:
+            seen_urls.add(url)
+        if norm_title:
+            seen_titles.add(norm_title)
+            
+        unique.append(a)
     return unique
 
 

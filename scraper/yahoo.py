@@ -280,36 +280,48 @@ def get_stock_news(ticker: str) -> list[dict[str, Any]]:
         return []
 
 
+import requests
+
 def search_stocks(query: str) -> list[dict[str, str]]:
     """
-    Search the local popular-stocks list for tickers or company names
-    that contain *query* (case-insensitive).
-
-    Parameters
-    ----------
-    query : str
-        The search string (partial ticker or company name).
-
-    Returns
-    -------
-    list[dict]
-        Each item has keys: ticker, name.
-        Returns up to 20 results.
+    Search using Yahoo Finance API directly for full market coverage,
+    and fallback to local list if it fails.
     """
     if not query or len(query.strip()) == 0:
         return POPULAR_STOCKS[:20]
 
-    q = query.strip().upper()
+    q = query.strip()
     matches: list[dict[str, str]] = []
 
+    # 1. Try Yahoo Finance live search API
+    try:
+        url = "https://query2.finance.yahoo.com/v1/finance/search"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        params = {'q': q, 'quotesCount': 15, 'newsCount': 0}
+        resp = requests.get(url, headers=headers, params=params, timeout=5)
+        if resp.status_code == 200:
+            quotes = resp.json().get('quotes', [])
+            for quote in quotes:
+                # We only want equities and ETFs, no mutual funds or crypto if they are weird
+                if quote.get('quoteType') in ('EQUITY', 'ETF', 'MUTUALFUND'):
+                    matches.append({
+                        "ticker": quote.get("symbol", ""),
+                        "name": quote.get("shortname") or quote.get("longname") or quote.get("symbol", "")
+                    })
+            if matches:
+                return matches
+    except Exception as exc:
+        logger.warning("Yahoo API search failed, falling back to local list: %s", exc)
+
+    # 2. Fallback to local POPULAR_STOCKS list
+    qu = q.upper()
     for stock in POPULAR_STOCKS:
-        if q in stock["ticker"].upper() or q in stock["name"].upper():
+        if qu in stock["ticker"].upper() or qu in stock["name"].upper():
             matches.append(stock)
         if len(matches) >= 20:
             break
 
-    # If we have at least one ticker match, prioritise exact ticker prefix
     if matches:
-        matches.sort(key=lambda s: (0 if s["ticker"].startswith(q) else 1, s["ticker"]))
+        matches.sort(key=lambda s: (0 if s["ticker"].startswith(qu) else 1, s["ticker"]))
 
     return matches
