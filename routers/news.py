@@ -180,9 +180,12 @@ async def market_news() -> dict[str, Any]:
     """
     try:
         newsapi_articles = newsapi_scraper.get_market_news(days=7)
-        yf_articles = yahoo_scraper.get_stock_news("QQQ")  # NASDAQ 100 ETF proxy
 
-        combined = _deduplicate(newsapi_articles + yf_articles)
+        # Pull from multiple broad-market ETFs for more coverage
+        yf_qqqq = yahoo_scraper.get_stock_news("QQQ")   # NASDAQ-100
+        yf_spy  = yahoo_scraper.get_stock_news("SPY")   # S&P 500 (overlap with tech)
+
+        combined = _deduplicate(newsapi_articles + yf_qqqq + yf_spy)
 
         # Score sentiment for every article (fast local, no API call)
         scored: list[dict[str, Any]] = []

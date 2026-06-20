@@ -153,11 +153,11 @@ def get_market_news(days: int = 7) -> list[dict[str, Any]]:
         from_date = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
 
         response = client.get_everything(
-            q="NASDAQ technology stocks",
+            q="NASDAQ OR stocks OR technology OR AI OR semiconductor OR earnings",
             from_param=from_date,
             language="en",
             sort_by="publishedAt",
-            page_size=30,
+            page_size=50,
         )
 
         articles: list[dict[str, Any]] = response.get("articles", [])
