@@ -1,36 +1,69 @@
 """
 db/database.py
 --------------
-SQLite database setup using Python's built-in sqlite3 module.
-Provides table initialisation and a connection factory.
+PostgreSQL database setup using psycopg2.
+Connects to Neon (serverless PostgreSQL) via DATABASE_URL env var.
+
+Provides table initialisation and a connection factory that returns
+dict-like rows (via RealDictCursor) — keeping the same interface
+the routers already use.
 """
 
-import sqlite3
 import logging
-from pathlib import Path
+import os
+from contextlib import contextmanager
+from typing import Generator
+
+import psycopg2
+import psycopg2.extras
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Resolve the database file path relative to this file's parent directory.
-DB_PATH = Path(__file__).resolve().parent.parent / "stock_news.db"
+_DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 
 
-def get_db() -> sqlite3.Connection:
+def get_db() -> psycopg2.extensions.connection:
     """
-    Return a new SQLite connection with row_factory set so rows behave
-    like dictionaries (accessible by column name).
+    Return a new psycopg2 connection to Neon PostgreSQL.
+    Rows are returned as RealDictRow (accessible by column name,
+    identical to SQLite's row_factory=sqlite3.Row behaviour).
 
-    Returns
-    -------
-    sqlite3.Connection
-        An open database connection. The caller is responsible for
-        closing it (preferably via a context manager).
+    The caller is responsible for committing and closing
+    (use as a context manager via `with get_db() as conn:`).
     """
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row          # enables dict-like row access
-    conn.execute("PRAGMA journal_mode=WAL")  # better concurrency for FastAPI
-    conn.execute("PRAGMA foreign_keys=ON")
+    if not _DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL environment variable is not set. "
+            "Add it to Render environment variables."
+        )
+    conn = psycopg2.connect(
+        _DATABASE_URL,
+        cursor_factory=psycopg2.extras.RealDictCursor,
+        connect_timeout=10,
+    )
     return conn
+
+
+@contextmanager
+def db_cursor() -> Generator:
+    """
+    Context manager that yields a cursor and auto-commits or rolls back.
+
+    Usage:
+        with db_cursor() as cur:
+            cur.execute("SELECT ...")
+            rows = cur.fetchall()
+    """
+    conn = get_db()
+    try:
+        with conn:          # psycopg2: `with conn` handles COMMIT / ROLLBACK
+            with conn.cursor() as cur:
+                yield cur
+    finally:
+        conn.close()
 
 
 def init_db() -> None:
@@ -46,45 +79,47 @@ def init_db() -> None:
     weekly_reports
         Stores generated weekly AI analysis reports as JSON blobs.
     """
-    logger.info("Initialising database at %s", DB_PATH)
-    with get_db() as conn:
-        conn.executescript(
-            """
-            -- ----------------------------------------------------------------
-            -- watchlist: user-saved NASDAQ tickers
-            -- ----------------------------------------------------------------
-            CREATE TABLE IF NOT EXISTS watchlist (
-                id         INTEGER  PRIMARY KEY AUTOINCREMENT,
-                ticker     TEXT     UNIQUE NOT NULL,
-                added_at   DATETIME DEFAULT (datetime('now'))
-            );
+    logger.info("Initialising PostgreSQL database via Neon...")
 
-            -- ----------------------------------------------------------------
-            -- news_cache: fetched news articles (from yfinance / NewsAPI)
-            -- ----------------------------------------------------------------
-            CREATE TABLE IF NOT EXISTS news_cache (
-                id           INTEGER  PRIMARY KEY AUTOINCREMENT,
-                ticker       TEXT     NOT NULL,
-                title        TEXT,
-                description  TEXT,
-                url          TEXT,
-                source       TEXT,
-                published_at TEXT,
-                sentiment    TEXT,
-                summary      TEXT,
-                cached_at    DATETIME DEFAULT (datetime('now'))
-            );
+    sql = """
+        -- ----------------------------------------------------------------
+        -- watchlist: user-saved NASDAQ tickers
+        -- ----------------------------------------------------------------
+        CREATE TABLE IF NOT EXISTS watchlist (
+            id         SERIAL       PRIMARY KEY,
+            ticker     TEXT         UNIQUE NOT NULL,
+            added_at   TIMESTAMPTZ  DEFAULT NOW()
+        );
 
-            -- ----------------------------------------------------------------
-            -- weekly_reports: AI-generated weekly analysis blobs
-            -- ----------------------------------------------------------------
-            CREATE TABLE IF NOT EXISTS weekly_reports (
-                id          INTEGER  PRIMARY KEY AUTOINCREMENT,
-                week_start  TEXT     NOT NULL,
-                week_end    TEXT     NOT NULL,
-                report_json TEXT     NOT NULL,
-                created_at  DATETIME DEFAULT (datetime('now'))
-            );
-            """
-        )
-    logger.info("Database tables ready.")
+        -- ----------------------------------------------------------------
+        -- news_cache: fetched news articles (from yfinance / NewsAPI)
+        -- ----------------------------------------------------------------
+        CREATE TABLE IF NOT EXISTS news_cache (
+            id           SERIAL       PRIMARY KEY,
+            ticker       TEXT         NOT NULL,
+            title        TEXT,
+            description  TEXT,
+            url          TEXT,
+            source       TEXT,
+            published_at TEXT,
+            sentiment    TEXT,
+            summary      TEXT,
+            cached_at    TIMESTAMPTZ  DEFAULT NOW()
+        );
+
+        -- ----------------------------------------------------------------
+        -- weekly_reports: AI-generated weekly analysis blobs
+        -- ----------------------------------------------------------------
+        CREATE TABLE IF NOT EXISTS weekly_reports (
+            id          SERIAL       PRIMARY KEY,
+            week_start  TEXT         NOT NULL,
+            week_end    TEXT         NOT NULL,
+            report_json TEXT         NOT NULL,
+            created_at  TIMESTAMPTZ  DEFAULT NOW()
+        );
+    """
+
+    with db_cursor() as cur:
+        cur.execute(sql)
+
+    logger.info("PostgreSQL tables ready.")

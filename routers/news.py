@@ -13,13 +13,14 @@ IMPORTANT — route ordering:
 """
 
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
 from ai.summarizer import summarize_news, score_news_sentiment
-from db.database import get_db
+from db.database import db_cursor
 from scraper import newsapi as newsapi_scraper
 from scraper import yahoo as yahoo_scraper
 
@@ -68,13 +69,13 @@ def _deduplicate(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _cache_articles(ticker: str, articles: list[dict[str, Any]]) -> None:
     """Persist a list of articles to the news_cache table."""
     try:
-        with get_db() as conn:
+        with db_cursor() as cur:
             for a in articles:
-                conn.execute(
+                cur.execute(
                     """
                     INSERT INTO news_cache
                         (ticker, title, description, url, source, published_at, cached_at)
-                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
                     """,
                     (
                         ticker.upper(),
@@ -96,17 +97,18 @@ def _get_cached_articles(ticker: str) -> list[dict[str, Any]]:
             datetime.utcnow() - timedelta(seconds=_CACHE_TTL_SECONDS)
         ).strftime("%Y-%m-%d %H:%M:%S")
 
-        with get_db() as conn:
-            rows = conn.execute(
+        with db_cursor() as cur:
+            cur.execute(
                 """
                 SELECT title, description, url, source, published_at
                 FROM   news_cache
-                WHERE  ticker = ? AND cached_at >= ?
+                WHERE  ticker = %s AND cached_at >= %s
                 ORDER  BY published_at DESC
                 LIMIT  40
                 """,
                 (ticker.upper(), cutoff),
-            ).fetchall()
+            )
+            rows = cur.fetchall()
 
         return [dict(r) for r in rows]
     except Exception as exc:
@@ -124,16 +126,17 @@ def _get_cached_summary(ticker: str) -> dict[str, Any] | None:
             datetime.utcnow() - timedelta(hours=_SUMMARY_TTL_HOURS)
         ).strftime("%Y-%m-%d %H:%M:%S")
 
-        with get_db() as conn:
-            row = conn.execute(
+        with db_cursor() as cur:
+            cur.execute(
                 """
                 SELECT summary FROM news_cache
-                WHERE  ticker = ? AND summary IS NOT NULL AND cached_at >= ?
+                WHERE  ticker = %s AND summary IS NOT NULL AND cached_at >= %s
                 ORDER  BY cached_at DESC
                 LIMIT  1
                 """,
                 (ticker.upper(), cutoff),
-            ).fetchone()
+            )
+            row = cur.fetchone()
 
         if row and row["summary"]:
             import json
@@ -149,14 +152,14 @@ def _cache_summary(ticker: str, summary: dict[str, Any]) -> None:
     try:
         import json
 
-        with get_db() as conn:
-            conn.execute(
+        with db_cursor() as cur:
+            cur.execute(
                 """
                 UPDATE news_cache
-                SET    summary = ?, cached_at = datetime('now')
+                SET    summary = %s, cached_at = NOW()
                 WHERE  id = (
                     SELECT id FROM news_cache
-                    WHERE  ticker = ?
+                    WHERE  ticker = %s
                     ORDER  BY cached_at DESC
                     LIMIT  1
                 )
