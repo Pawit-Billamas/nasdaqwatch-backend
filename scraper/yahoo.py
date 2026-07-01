@@ -145,59 +145,95 @@ POPULAR_STOCKS: list[dict[str, str]] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# In-memory metadata cache: name / sector / pe_ratio from FMP profile.
+# Avoids calling yfinance .info (which is rate-limited) on every request.
+# TTL: 6 hours — metadata rarely changes during the trading day.
+# ---------------------------------------------------------------------------
+import time as _time
+
+_META_CACHE: dict[str, dict] = {}   # ticker -> {name, sector, pe_ratio, expires}
+_META_TTL = 6 * 3600                # seconds
+
+
+def _get_meta(upper: str) -> dict[str, Any]:
+    """Return cached metadata or fetch from FMP profile (then yfinance as last resort)."""
+    cached = _META_CACHE.get(upper)
+    if cached and cached['expires'] > _time.time():
+        return cached
+
+    meta: dict[str, Any] = {'name': upper, 'sector': None, 'pe_ratio': None}
+
+    # Try FMP profile first (free, not rate-limited)
+    try:
+        import os, requests as _req
+        key = os.getenv('FMP_API_KEY', '')
+        if key:
+            r = _req.get(
+                f'https://financialmodelingprep.com/api/v3/profile/{upper}',
+                params={'apikey': key}, timeout=6,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if data:
+                    p = data[0]
+                    meta['name']   = p.get('companyName') or upper
+                    meta['sector'] = p.get('sector')
+                    # FMP profile has pe from ratios endpoint; skip to keep calls low
+                    _META_CACHE[upper] = {**meta, 'expires': _time.time() + _META_TTL}
+                    return meta
+    except Exception as exc:
+        logger.debug("FMP profile fetch failed for %s: %s", upper, exc)
+
+    # Last resort: yfinance .info (may be rate-limited)
+    try:
+        import yfinance as _yf
+        info = _yf.Ticker(upper).info or {}
+        meta['name']     = info.get('longName') or info.get('shortName') or upper
+        meta['sector']   = info.get('sector')
+        meta['pe_ratio'] = info.get('trailingPE')
+    except Exception as info_exc:
+        logger.warning("get_stock_info(%s) .info failed (non-fatal): %s", upper, info_exc)
+
+    _META_CACHE[upper] = {**meta, 'expires': _time.time() + _META_TTL}
+    return meta
+
+
 def get_stock_info(ticker: str) -> dict[str, Any]:
     """
-    Fetch current price, key financials and metadata for a ticker.
-    Uses fast_info first for speed, falls back to info only for metadata.
+    Fetch current price and metadata for a ticker.
+    Price: yfinance fast_info (lightweight, not rate-limited).
+    Metadata (name/sector): FMP profile cache → yfinance .info fallback.
     """
     upper = ticker.upper()
     try:
         stock = yf.Ticker(upper)
+        fast  = stock.fast_info
 
-        # fast_info is much faster and more reliable for live price data
-        fast = stock.fast_info
-
-        price: float | None = getattr(fast, 'last_price', None)
-        prev_close: float | None = getattr(fast, 'previous_close', None)
+        price:        float | None = getattr(fast, 'last_price', None)
+        prev_close:   float | None = getattr(fast, 'previous_close', None)
         week_52_high: float | None = getattr(fast, 'year_high', None)
-        week_52_low: float | None = getattr(fast, 'year_low', None)
-        market_cap: float | None = getattr(fast, 'market_cap', None)
-        volume: float | None = getattr(fast, 'three_month_average_volume', None)
+        week_52_low:  float | None = getattr(fast, 'year_low', None)
+        market_cap:   float | None = getattr(fast, 'market_cap', None)
+        volume:       float | None = getattr(fast, 'three_month_average_volume', None)
 
-        change: float = round(float(price or 0) - float(prev_close or 0), 4) if price and prev_close else 0.0
+        change:     float = round(float(price or 0) - float(prev_close or 0), 4) if price and prev_close else 0.0
         change_pct: float = round((change / float(prev_close)) * 100, 2) if prev_close else 0.0
-
-        # Only call .info if we need metadata (name, sector) — it's slow so wrap in try
-        name = upper
-        sector = "Technology"
-        pe_ratio = None
-        try:
-            info = stock.info
-            name = info.get('longName') or info.get('shortName') or upper
-            sector = info.get('sector', 'Technology')
-            pe_ratio = info.get('trailingPE')
-            # Fill in missing fast_info values from info if needed
-            if not market_cap:
-                market_cap = info.get('marketCap')
-            if not week_52_high:
-                week_52_high = info.get('fiftyTwoWeekHigh')
-            if not week_52_low:
-                week_52_low = info.get('fiftyTwoWeekLow')
-        except Exception as info_exc:
-            logger.warning("get_stock_info(%s) .info failed (non-fatal): %s", upper, info_exc)
 
         if price is None:
             raise ValueError(f"No price data returned by yfinance for {upper}")
 
+        meta = _get_meta(upper)
+
         return {
             'ticker':       upper,
-            'name':         name,
+            'name':         meta['name'],
             'price':        round(float(price), 4),
             'change':       change,
             'change_pct':   change_pct,
             'market_cap':   market_cap,
-            'sector':       sector,
-            'pe_ratio':     pe_ratio,
+            'sector':       meta['sector'],
+            'pe_ratio':     meta['pe_ratio'],
             'week_52_high': week_52_high,
             'week_52_low':  week_52_low,
             'volume':       volume,

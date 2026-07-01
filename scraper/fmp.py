@@ -27,8 +27,15 @@ def _get(path: str, params: dict | None = None) -> Any:
         raise RuntimeError("FMP_API_KEY not set")
     p = {"apikey": FMP_API_KEY, **(params or {})}
     r = requests.get(f"{_BASE}{path}", params=p, timeout=_TIMEOUT)
+    if r.status_code == 403:
+        # FMP free tier returns 403 for non-US tickers (e.g. ASML, TSM ADR variants)
+        raise ValueError(f"FMP 403: ticker may be non-US or not in free tier — {path}")
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+    # FMP returns {"Error Message": "..."} for invalid tickers on some endpoints
+    if isinstance(data, dict) and "Error Message" in data:
+        raise ValueError(f"FMP error: {data['Error Message']}")
+    return data
 
 
 def get_fundamentals_fmp(ticker: str) -> dict[str, Any]:
