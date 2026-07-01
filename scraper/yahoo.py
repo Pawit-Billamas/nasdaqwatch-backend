@@ -214,6 +214,109 @@ def get_stock_info(ticker: str) -> dict[str, Any]:
         }
 
 
+def get_fundamentals(ticker: str) -> dict[str, Any]:
+    """
+    Fetch comprehensive financial fundamentals for a ticker from yfinance.
+
+    Returns key metrics for long-term investors:
+    - Profitability: gross margin, operating margin, net margin, ROE, ROA
+    - Valuation: P/E, forward P/E, PEG, P/S, P/B
+    - Growth: revenue growth, earnings growth YoY
+    - Cash Flow: free cash flow, operating cash flow
+    - Balance Sheet: debt/equity, current ratio, cash on hand
+    - Earnings: trailing EPS, forward EPS, next earnings date
+    """
+    upper = ticker.upper()
+    try:
+        stock = yf.Ticker(upper)
+        info = stock.info or {}
+
+        # ---------- Helper: safe float ----------
+        def _f(key: str) -> float | None:
+            v = info.get(key)
+            try:
+                return float(v) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        def _pct(key: str) -> float | None:
+            v = _f(key)
+            return round(v * 100, 2) if v is not None else None
+
+        # ---------- Earnings dates ----------
+        try:
+            cal = stock.calendar
+            next_earnings = None
+            if cal is not None:
+                # Newer yfinance returns dict with 'Earnings Date' key as list
+                if isinstance(cal, dict):
+                    ed = cal.get('Earnings Date') or cal.get('earningsDate')
+                    if ed:
+                        next_earnings = str(ed[0]) if isinstance(ed, list) else str(ed)
+                elif hasattr(cal, 'columns') and 'Earnings Date' in cal.columns:
+                    next_earnings = str(cal['Earnings Date'].iloc[0])
+        except Exception:
+            next_earnings = None
+
+        # ---------- Assemble ----------
+        return {
+            "ticker": upper,
+            "name":   info.get("longName") or info.get("shortName") or upper,
+
+            # Valuation
+            "pe_trailing":      _f("trailingPE"),
+            "pe_forward":       _f("forwardPE"),
+            "peg_ratio":        _f("pegRatio"),
+            "price_to_sales":   _f("priceToSalesTrailing12Months"),
+            "price_to_book":    _f("priceToBook"),
+
+            # Profitability (as %)
+            "gross_margin":     _pct("grossMargins"),
+            "operating_margin": _pct("operatingMargins"),
+            "profit_margin":    _pct("profitMargins"),
+            "roe":              _pct("returnOnEquity"),
+            "roa":              _pct("returnOnAssets"),
+
+            # Growth (as %)
+            "revenue_growth":   _pct("revenueGrowth"),
+            "earnings_growth":  _pct("earningsGrowth"),
+
+            # Cash flow (raw dollars)
+            "free_cash_flow":   _f("freeCashflow"),
+            "operating_cash":   _f("operatingCashflow"),
+
+            # Balance sheet
+            "total_debt":       _f("totalDebt"),
+            "total_cash":       _f("totalCash"),
+            "debt_to_equity":   _f("debtToEquity"),
+            "current_ratio":    _f("currentRatio"),
+            "quick_ratio":      _f("quickRatio"),
+
+            # Per-share
+            "eps_trailing":     _f("trailingEps"),
+            "eps_forward":      _f("forwardEps"),
+
+            # Revenue
+            "total_revenue":    _f("totalRevenue"),
+            "revenue_per_share":_f("revenuePerShare"),
+
+            # Dividends
+            "dividend_yield":   _pct("dividendYield"),
+            "payout_ratio":     _pct("payoutRatio"),
+
+            # Meta
+            "sector":           info.get("sector"),
+            "industry":         info.get("industry"),
+            "employee_count":   info.get("fullTimeEmployees"),
+            "next_earnings":    next_earnings,
+            "fiscal_year_end":  info.get("fiscalYearEnd"),
+        }
+
+    except Exception as exc:
+        logger.error("get_fundamentals(%s) failed: %s", upper, exc)
+        return {"ticker": upper, "error": str(exc)}
+
+
 def get_stock_news(ticker: str) -> list[dict[str, Any]]:
     """
     Retrieve recent news articles for a ticker from yfinance.
