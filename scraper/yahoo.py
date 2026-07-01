@@ -216,7 +216,8 @@ def get_stock_info(ticker: str) -> dict[str, Any]:
 
 def get_fundamentals(ticker: str) -> dict[str, Any]:
     """
-    Fetch comprehensive financial fundamentals for a ticker from yfinance.
+    Fetch fundamentals — tries FMP first (more reliable on Render),
+    falls back to yfinance if FMP key is missing or call fails.
 
     Returns key metrics for long-term investors:
     - Profitability: gross margin, operating margin, net margin, ROE, ROA
@@ -227,6 +228,19 @@ def get_fundamentals(ticker: str) -> dict[str, Any]:
     - Earnings: trailing EPS, forward EPS, next earnings date
     """
     upper = ticker.upper()
+
+    # Try FMP first — it's reliable on Render's IPs
+    try:
+        from scraper.fmp import get_fundamentals_fmp, FMP_API_KEY
+        if FMP_API_KEY:
+            result = get_fundamentals_fmp(upper)
+            if "error" not in result:
+                logger.info("get_fundamentals(%s): served from FMP", upper)
+                return result
+            logger.warning("FMP returned error for %s, falling back to yfinance: %s", upper, result.get("error"))
+    except Exception as fmp_exc:
+        logger.warning("FMP call failed for %s, falling back to yfinance: %s", upper, fmp_exc)
+
     try:
         stock = yf.Ticker(upper)
         info = stock.info or {}
