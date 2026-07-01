@@ -19,6 +19,7 @@ from apscheduler.triggers.cron import CronTrigger
 from ai.summarizer import analyze_watchlist_for_weekly
 from db.database import get_db
 from scraper.yahoo import get_stock_info, get_stock_news
+from scheduler.alert_checker import check_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -111,9 +112,20 @@ def start_scheduler(app=None) -> BackgroundScheduler:
         misfire_grace_time=3600,  # allow up to 1 hour late start
     )
 
+    # Run alert checks every 10 minutes
+    scheduler.add_job(
+        check_alerts,
+        trigger="interval",
+        minutes=10,
+        id="alert_checker",
+        name="Alert Checker (every 10 min)",
+        replace_existing=True,
+        misfire_grace_time=120,
+    )
+
     scheduler.start()
     logger.info(
-        "[Scheduler] Started. Weekly report job scheduled for Sunday 08:00 Asia/Bangkok."
+        "[Scheduler] Started. Weekly report job scheduled for Sunday 08:00 Asia/Bangkok. Alert checker every 10 min."
     )
 
     if app is not None:

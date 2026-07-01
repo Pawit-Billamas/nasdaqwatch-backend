@@ -117,6 +117,41 @@ def init_db() -> None:
             report_json TEXT         NOT NULL,
             created_at  TIMESTAMPTZ  DEFAULT NOW()
         );
+
+        -- ----------------------------------------------------------------
+        -- portfolio_holdings: user portfolio positions
+        -- ----------------------------------------------------------------
+        CREATE TABLE IF NOT EXISTS portfolio_holdings (
+            id         SERIAL       PRIMARY KEY,
+            ticker     TEXT         NOT NULL,
+            shares     NUMERIC      NOT NULL CHECK (shares > 0),
+            avg_cost   NUMERIC      NOT NULL CHECK (avg_cost > 0),
+            added_at   TIMESTAMPTZ  DEFAULT NOW()
+        );
+
+        -- ----------------------------------------------------------------
+        -- alert_rules: price / news / AI alert conditions
+        -- ----------------------------------------------------------------
+        CREATE TABLE IF NOT EXISTS alert_rules (
+            id         SERIAL       PRIMARY KEY,
+            ticker     TEXT         NOT NULL,
+            kind       TEXT         NOT NULL,
+            target     NUMERIC,
+            enabled    BOOLEAN      DEFAULT TRUE,
+            created_at TIMESTAMPTZ  DEFAULT NOW()
+        );
+
+        -- ----------------------------------------------------------------
+        -- alert_events: triggered alert instances
+        -- ----------------------------------------------------------------
+        CREATE TABLE IF NOT EXISTS alert_events (
+            id           SERIAL       PRIMARY KEY,
+            rule_id      INTEGER      REFERENCES alert_rules(id) ON DELETE CASCADE,
+            ticker       TEXT         NOT NULL,
+            message      TEXT         NOT NULL,
+            triggered_at TIMESTAMPTZ  DEFAULT NOW(),
+            is_read      BOOLEAN      DEFAULT FALSE
+        );
     """
 
     with db_cursor() as cur:

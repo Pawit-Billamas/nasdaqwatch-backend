@@ -22,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv()
 
 from db.database import init_db
-from routers import news, reports, stocks, watchlist
+from routers import news, reports, stocks, watchlist, portfolio, compare, calendar, alerts
 from scheduler.weekly_report import start_scheduler
 
 # ---------------------------------------------------------------------------
@@ -102,6 +102,10 @@ app.include_router(stocks.router)
 app.include_router(news.router)
 app.include_router(watchlist.router)
 app.include_router(reports.router)
+app.include_router(portfolio.router)
+app.include_router(compare.router)
+app.include_router(calendar.router)
+app.include_router(alerts.router)
 
 
 # ---------------------------------------------------------------------------
